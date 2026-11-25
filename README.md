@@ -47,4 +47,32 @@ pytest -q                               # 9 tests, CPU
 python -m minivllm.bench --out results  # GPU, resumable (runs.jsonl)
 ```
 
-**Results are pending** from the Colab run.
+## Results (Tesla T4, Colab)
+
+The table and raw rows are in [`results/`](results/). All configurations do identical work:
+256 requests and the same generated tokens.
+
+| workload | policy | max seqs | KV blocks | prefix cache | tok/s | latency mean / p90 (s) | TTFT (s) | mean batch | preempt | tokens through the model |
+|---|---|---|---|---|---|---|---|---|---|---|
+| random | static | 32 | 4096 | – | 356 | 49.3 / 88.5 | 47.7 | 4.1 | 0 | 105,058 |
+| random | continuous | 32 | 4096 | – | 1468 | 12.7 / 21.9 | 9.9 | 28.9 | 0 | 105,058 |
+| random | continuous | 128 | 4096 | – | **1838** | 12.1 / 18.0 | 4.4 | 80.7 | 0 | 105,058 |
+| random | continuous | 128 | 1024 | – | 1568 | 12.2 / 20.8 | 8.5 | 39.7 | 84 | 126,764 |
+| shared prefix | continuous | 128 | 4096 | off | 1488 | 15.3 / 23.2 | 6.1 | 79.8 | 21 | 161,924 |
+| shared prefix | continuous | 128 | 4096 | on | 1677 | 13.4 / 20.4 | 4.6 | 84.5 | 0 | 88,935 |
+
+What the numbers show:
+- **Continuous batching is 4.1× faster than static batching at the same 32-sequence limit**
+  (1468 vs 356 tok/s). A static batch runs until its longest output finishes, so its slots
+  sit idle: its mean running batch is 4.1 of 32. Continuous batching refills a slot the
+  step it frees, which keeps the mean at 28.9. Mean latency falls from 49 s to 13 s.
+- Raising the limit to 128 sequences adds another 25% (1838 tok/s) and cuts time to first
+  token from 9.9 s to 4.4 s.
+- **A 4× smaller KV pool causes 84 preemptions.** Preempted sequences free their blocks and
+  recompute their tokens later, which puts 21% more tokens through the model (126,764 vs
+  105,058). Throughput drops 15%, to 1568 tok/s, and time to first token nearly doubles.
+- **Prefix caching on a shared 256-token system prompt puts 45% fewer tokens through the
+  model** (88,935 vs 161,924), and 64,000 tokens are served from the cache. Throughput rises 13% and
+  time to first token falls from 6.1 s to 4.6 s. Without caching, each request holds its
+  own copy of the prefix's KV blocks, and the pool runs short (21 preemptions). With
+  sharing it doesn't (0).
